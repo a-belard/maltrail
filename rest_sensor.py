@@ -1267,7 +1267,10 @@ def fetch_events():
     hostname=socket.gethostname()
     IPAddr=socket.gethostbyname(hostname)
         
-    ip = IP(src=IPAddr, dst=_request_ip)
+    try:
+        ip = IP(src=IPAddr, dst=_request_ip)
+    except Exception:
+        return "Domain name does not exist"
     tcp = TCP(sport=RandShort(), dport=80)
     payload = "POST / HTTP/1.1\r\nUser-Agent: " + user_agent + "\r\n\r\n"
     packet = ip/tcp/payload
