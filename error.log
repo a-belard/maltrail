@@ -6,3 +6,53 @@
 
 [!] session abruptly terminated
 [?] (hint: "https://stackoverflow.com/a/20997655")
+2023-01-10 01:48:50 
+
+[!] session abruptly terminated
+[?] (hint: "https://stackoverflow.com/a/20997655")
+2023-01-10 01:50:14 
+
+[!] session abruptly terminated
+[?] (hint: "https://stackoverflow.com/a/20997655")
+2023-01-10 01:51:48 
+
+[!] session abruptly terminated
+[?] (hint: "https://stackoverflow.com/a/20997655")
+2023-01-10 01:52:09 
+
+[!] session abruptly terminated
+[?] (hint: "https://stackoverflow.com/a/20997655")
+2023-01-10 10:29:58 
+
+[!] unhandled exception occurred ('local variable 'retries' referenced before assignment')
+[x] please report the following details at 'https://github.com/stamparm/maltrail/issues':
+---
+'Traceback (most recent call last):
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 630, in <module>
+    main()
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 580, in main
+    _init_()
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 534, in _init_
+    while retries < CHECK_CONNECTION_MAX_RETRIES and not check_connection():
+UnboundLocalError: local variable 'retries' referenced before assignment
+'
+---
+2023-01-10 12:08:58 
+
+[!] unhandled exception occurred (''>=' not supported between instances of 'float' and 'NoneType'')
+[x] please report the following details at 'https://github.com/stamparm/maltrail/issues':
+---
+'Traceback (most recent call last):
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 634, in <module>
+    main()
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 583, in main
+    _init_()
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 577, in _init_
+    update_timer()
+  File "/home/belix/Documents/maltrail/rest_sensor.py", line 548, in update_timer
+    _ = update_trails()
+  File "/home/belix/Documents/maltrail/core/update.py", line 108, in update_trails
+    if not trails and (force or not os.path.isfile(config.TRAILS_FILE) or (time.time() - os.stat(config.TRAILS_FILE).st_mtime) >= config.UPDATE_PERIOD or os.stat(config.TRAILS_FILE).st_size == 0 or any(os.stat(_).st_mtime > os.stat(config.TRAILS_FILE).st_mtime for _ in trail_files)):
+TypeError: '>=' not supported between instances of 'float' and 'NoneType'
+'
+---
