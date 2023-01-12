@@ -105,8 +105,12 @@ from core.update import update_trails
 from thirdparty import six
 from thirdparty.six.moves import urllib as _urllib
 
-#flask
+#flask and redis
 from flask import Flask, request, jsonify
+import redis
+
+#responses
+from response_types import *
 
 warnings.filterwarnings(action="ignore", category=DeprecationWarning)       # NOTE: https://github.com/helpsystems/pcapy/pull/67/files
 
@@ -405,33 +409,31 @@ def _process_packet(packet, sec, usec, ip_offset):
                                 _connect_src_details[key] = set()
                             _connect_src_dst[key].add(dst_ip)
                             _connect_src_details[key].add((sec, usec, src_port, dst_ip))
-            else:
                 tcph_length = doff_reserved >> 4
                 h_size = iph_length + (tcph_length << 2)
                 tcp_data = get_text(ip_data[h_size:])
+                
+                match = re.search(GENERIC_SINKHOLE_REGEX, tcp_data[:2000])
+                if match:
+                    trail = match.group(0)
+                    return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, trail, "sinkhole response (malware)", "(heuristic)"), packet)
+                else:
+                    index = tcp_data.find("<title>")
+                    if index >= 0:
+                        title = tcp_data[index + len("<title>"):tcp_data.find("</title>", index)]
+                        if re.search(r"domain name has been seized by|Domain Seized|Domain Seizure", title):
+                            return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, title, "seized domain (suspicious)", "(heuristic)"), packet)
 
-                if tcp_data.startswith("HTTP/"):
-                    match = re.search(GENERIC_SINKHOLE_REGEX, tcp_data[:2000])
-                    if match:
-                        trail = match.group(0)
-                        return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, trail, "sinkhole response (malware)", "(heuristic)"), packet)
-                    else:
-                        index = tcp_data.find("<title>")
-                        if index >= 0:
-                            title = tcp_data[index + len("<title>"):tcp_data.find("</title>", index)]
-                            if re.search(r"domain name has been seized by|Domain Seized|Domain Seizure", title):
-                                return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, title, "seized domain (suspicious)", "(heuristic)"), packet)
+                content_type = None
+                first_index = tcp_data.find("\r\nContent-Type:")
+                if first_index >= 0:
+                    first_index = first_index + len("\r\nContent-Type:")
+                    last_index = tcp_data.find("\r\n", first_index)
+                    if last_index >= 0:
+                        content_type = tcp_data[first_index:last_index].strip().lower()
 
-                    content_type = None
-                    first_index = tcp_data.find("\r\nContent-Type:")
-                    if first_index >= 0:
-                        first_index = first_index + len("\r\nContent-Type:")
-                        last_index = tcp_data.find("\r\n", first_index)
-                        if last_index >= 0:
-                            content_type = tcp_data[first_index:last_index].strip().lower()
-
-                    if content_type and content_type in SUSPICIOUS_CONTENT_TYPES:
-                        return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, content_type, "content type (suspicious)", "(heuristic)"), packet)
+                if content_type and content_type in SUSPICIOUS_CONTENT_TYPES:
+                    return_event((sec, usec, src_ip, src_port, dst_ip, dst_port, PROTO.TCP, TRAIL.HTTP, content_type, "content type (suspicious)", "(heuristic)"), packet)
 
                 method, path = None, None
 
@@ -534,7 +536,6 @@ def _process_packet(packet, sec, usec, ip_offset):
                             if last_index >= 0:
                                 user_agent = tcp_data[first_index:last_index]
                                 user_agent = _urllib.parse.unquote(user_agent).strip()
-                                print(user_agent)
 
                         if user_agent:
                             result = _result_cache.get((CACHE_TYPE.USER_AGENT, user_agent))
@@ -1237,58 +1238,119 @@ def validIPAddress(IP: str) -> str:
         
             
 # flask app
-app = Flask(__name__)     
-        
+app = Flask(__name__)   
+
+hostname=socket.gethostname()
+IPAddr=socket.gethostbyname(hostname)
+redis_client = redis.Redis(host="localhost", port=6379)
+
 @app.route('/v1/sensor', methods=['POST'])
 def fetch_events():
     global _request_ip
     global _threat_found
-    # Extract the IP address and user agent from the request data
+    
     data = request.get_json()
-    ip_address = data['ip_address']
-    user_agent = data['user_agent']
-    event_id = data['event_id']
-    type = data['type']
-    domain_name =  data['domain_name']
-    content_type = data['content_type']
     
     # validations
-    if type != "IP" and type != "DOMAIN":
-        return "Invalid type"
     
+    if 'event_id' not in data or data['event_id'] == "":
+        return RequiredResponse('event id')
+    
+    if 'type' not in data or data['type'] == "":
+        return RequiredResponse("Type").get_obj()
+    
+    type = data['type']
     if type == "IP":
-        ip_version = validIPAddress(ip_address)
+        if 'ip_address' not in data or data["ip_address"] == "": 
+            return RequiredResponse("IP address").get_obj()
+        ip_version = validIPAddress(data['ip_address'])
         if ip_version == None:
-            return "Invalid IP address"
-        _request_ip = ip_address
+            return InvalidResponse("IP address").get_obj()
+        _request_ip = data['ip_address']
+    elif type == "DOMAIN":
+        if 'domain_name' not in data or data["domain_name"] == "":
+            return RequiredResponse("domain name").get_obj()
+        _request_ip = data['domain_name']
     else:
-        _request_ip = domain_name 
+        return InvalidResponse("Type").get_obj()
+    
+    current_timestamp = int(time.time())
+    N = int(config.N)
+    ttl = int(config.TTL) * 60 * 60 
+    
+    if redis_client.lrange(_request_ip, 0, -1) != None:
+        prev_timestamps = redis_client.lrange(_request_ip, 0, -1)
+        for timestamp in prev_timestamps:
+            timestamp = int(timestamp)
+            if current_timestamp - timestamp < 1:
+                req_count = redis_client.llen(_request_ip)
+                if req_count >= N:
+                    return {
+                        "statusCode": 200,
+                        "event_id": data["event_id"],
+                        "ip_address": _request_ip,
+                        "reason": "Dos/DDos suspected!",
+                        "severity": "HIGH",
+                        "timestamp": current_timestamp,
+                        "references": "",
+                    }
+        redis_client.rpush(_request_ip, current_timestamp)
+        redis_client.expire(_request_ip, ttl)
+    else:
+        redis_client.rpush(_request_ip, current_timestamp)
+        redis_client.expire(_request_ip, ttl)
+
+    event_id = data['event_id']
+    user_agent = ""
+    content_type = ""
+    if "user_agent" in data:
+        user_agent = data['user_agent']
+    if "content_type" in data:
+        content_type = data['content_type']
         
+    result = {}
+    result['statusCode'] = 200        
+    result['event_id'] = event_id
+    result['timestamp'] = int(time.time())
+    if user_agent != "":
+        result['user-agent'] = user_agent
+    if content_type != "":
+        result["content-type"] = content_type
+    if type == "IP":
+        result["ip_address"] = _request_ip
+    else:
+        result["domain_name"] = _request_ip
+            
     hostname=socket.gethostname()
     IPAddr=socket.gethostbyname(hostname)
         
     try:
-        ip = IP(src=IPAddr, dst=_request_ip)
+        ip = IP(src=_request_ip, dst=_request_ip)
     except Exception:
-        return "Domain name does not exist"
-    tcp = TCP(sport=RandShort(), dport=80)
-    payload = "POST / HTTP/1.1\r\nUser-Agent: " + user_agent + "\r\n\r\n"
-    packet = ip/tcp/payload
-    send(packet)
+        return InvalidResponse("domain name").get_obj()
+    
+    new_request = 'GET / HTTP/1.1\r\nHost: ' + _request_ip + '\r\nUser-Agent: ' + user_agent + '\r\nContent-Type: ' + content_type + '\r\n\r\n' + ""
+    tcp = TCP(sport=RandShort(), dport=80, flags="S")
+    packet = ip / tcp / new_request
+    
+    try:
+        send(packet)
+    except Exception:
+        return {"statusCode": 500, "errorMessage": "Unexpected error occured"}
     
     # wait for analysis
-    time.sleep(1)
+    time.sleep(0.2)
     
-    result = _threat_found
-    if result is None:
-        return "No threats found"
-    result['event_id'] = event_id
-    # timestamp in int
-    result['timestamp'] = int(time.time())
-    if type == "IP":
-        result["ip_address"] = ip_address
-    else:
-        result["domain_name"] = domain_name
+    is_threat_found = _threat_found
+    if(is_threat_found != None):
+        result.update(_threat_found)
+
+    if is_threat_found == None:
+        result['reason'] = "No threat found"
+        result['references'] = ""
+        result['severity'] =  "LOW"
+        return result
+    
         
     # set severity
     SEVERITY = {
@@ -1306,6 +1368,8 @@ def fetch_events():
         "compromised": SEVERITY["LOW"],
         "crawler": SEVERITY["LOW"],
         "scanning": SEVERITY["LOW"],
+        "user agent": SEVERITY["HIGH"],
+        "content type": SEVERITY["MEDIUM"]
     }
     threat_severity = ""
     if "(custom)" in result["reference"]:
