@@ -2,7 +2,7 @@ FROM ubuntu:focal
 
 RUN apt-get update \ 
     && apt-get upgrade -y \
-    && apt-get install -y git python3 python3-dev python3-pip python-is-python3 libpcap-dev build-essential procps schedtool cron \
+    && apt-get install -y git python3 python3-dev python3-pip python-is-python3 libpcap-dev build-essential procps schedtool cron redis \
     && pip3 install pcapy-ng flask shlex \
     && git clone --depth=1 https://github.com/stamparm/maltrail.git /opt/maltrail \
     && python /opt/maltrail/core/update.py
@@ -16,4 +16,4 @@ RUN (crontab -l ; echo '2 1 * * * /usr/bin/pkill -f maltrail') | crontab
 EXPOSE 8337/udp
 EXPOSE 8338/tcp
 
-CMD bash -c "python /opt/maltrail/rest_sensor.py &" && cron && tail -f /var/log/cron.log
+CMD bash -c "systemctl restart redis-server" && bash -c "python /opt/maltrail/rest_sensor.py &" && cron && tail -f /var/log/cron.log
