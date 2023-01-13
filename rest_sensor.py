@@ -144,27 +144,6 @@ except ImportError:
     import builtins as __builtin__
 
 
-def print(*args, **kwargs):
-    ret = __builtin__.print(*args, **kwargs)
-    sys.stdout.flush()
-    return ret
-
-def return_event(event, packet):
-    global _request_ip
-    global _threat_found
-    if _request_ip != None:
-        _threat_found = {"reason": event[9], "reference": event[10]}
-
-try:
-    import pcapy
-except ImportError:
-    if IS_WIN:
-        sys.exit("[!] please install 'WinPcap' (e.g. 'http://www.winpcap.org/install/') and Pcapy (e.g. 'https://breakingcode.wordpress.com/?s=pcapy')")
-    else:
-        msg = "[!] please install 'pcapy or pcapy-ng' (e.g. 'sudo pip%s install pcapy-ng')" % ('3' if six.PY3 else '2')
-
-        sys.exit(msg)
-
 def _check_domain_member(query, domains):
     parts = query.lower().split('.')
 
@@ -287,19 +266,9 @@ def _process_request(request_ip, user_agent="", content_type=""):
         return is_threat_domain
     if _request_ip in trails:
         return return_result(trails[_request_ip][0], trails[_request_ip][1]);
-    for key in _connect_src_dst:
-        if not check_whitelisted(request_ip):
-            if not _dst.isdigit() and len(_connect_src_dst[key]) > PORT_SCANNING_THRESHOLD:
-                for _ in _connect_src_details[key]:
-                    return return_result("potential port scanning", "(heuristic)")
-        elif len(_connect_src_dst[key]) > INFECTION_SCANNING_THRESHOLD:
-            _dst_port = request_ip
-            _dst_ip = [_[-1] for _ in _connect_src_details[key]]
-            _src_port = [_[-2] for _ in _connect_src_details[key]]
-
-            if len(_dst_ip) == len(set(_dst_ip)):
-                if _src_ip.startswith(_get_local_prefix()):
-                    return return_result("potential infection", "(heuristic)")
+    if len(request_ip) == len(set(request_ip)):
+        if request_ip.startswith(_get_local_prefix()):
+            return return_result("potential infection", "(heuristic)")
     
     # user_agent
     if user_agent != "":
@@ -337,31 +306,9 @@ def init():
     Performs sensor initialization
     """
 
-    global _multiprocessing
-
-    try:
-        import multiprocessing
-
-        if config.PROCESS_COUNT > 1 and not config.profile:
-            _multiprocessing = multiprocessing
-    except (ImportError, OSError, NotImplementedError):
-        pass
-
     def update_timer():
-        retries = 0
-        if not config.offline:
-            while retries < CHECK_CONNECTION_MAX_RETRIES and not check_connection():
-                sys.stdout.write("[!] can't update because of lack of Internet connection (waiting..." if not retries else '.')
-                sys.stdout.flush()
-                time.sleep(10)
-                retries += 1
-
-            if retries:
-                print(")")
-
-        if config.offline or retries == CHECK_CONNECTION_MAX_RETRIES:
-            if retries == CHECK_CONNECTION_MAX_RETRIES:
-                print("[x] going to continue without online update")
+        if config.offline:
+            print("[x] going to continue without online update")
             _ = update_trails(offline=True)
         else:
             _ = update_trails()
@@ -391,10 +338,9 @@ def init():
         trails._regex = _regex.strip('|')
 
         thread = threading.Timer(config.UPDATE_PERIOD, update_timer)
-        thread.daemon = True
+        thread.daemon = True 
         thread.start()
 
-    create_log_directory()
     get_error_log_handle()
 
     msg = "[i] using '%s' for trail storage" % config.TRAILS_FILE
@@ -456,8 +402,6 @@ def init():
         except re.error:
             sys.exit("[!] invalid configuration value for 'REMOTE_SEVERITY_REGEX' ('%s')" % config.REMOTE_SEVERITY_REGEX)
 
-    if _multiprocessing:
-        _init_multiprocessing()
 
 
 def validIPAddress(IP: str) -> str:
@@ -551,11 +495,6 @@ def fetch_events():
         result.update(_threat_found)
 
     if is_threat_found == None:
-        try:
-            ip = IP(src=_request_ip, dst=_request_ip)
-        except Exception:
-            return InvalidResponse("domain name").get_obj()
-
         result['reason'] = "No threat found"
         result['references'] = ""
         result['severity'] =  "LOW"
@@ -572,12 +511,12 @@ def fetch_events():
         "malware": SEVERITY["HIGH"],
         "adversary": SEVERITY["HIGH"],
         "ransomware": SEVERITY["HIGH"],
-        "reputation": SEVERITY["LOW"],
-        "attacker": SEVERITY["LOW"],
-        "spammer": SEVERITY["LOW"],
-        "compromised": SEVERITY["LOW"],
-        "crawler": SEVERITY["LOW"],
-        "scanning": SEVERITY["LOW"],
+        "reputation": SEVERITY["MEDIUM"],
+        "attacker": SEVERITY["MEDIUM"],
+        "spammer": SEVERITY["MEDIUM"],
+        "compromised": SEVERITY["MEDIUM"],
+        "crawler": SEVERITY["MEDIUM"],
+        "scanning": SEVERITY["MEDIUM"],
         "user agent": SEVERITY["HIGH"],
         "content type": SEVERITY["MEDIUM"]
     }
@@ -593,7 +532,7 @@ def fetch_events():
     elif "malware distribution" in result["reason"]:
         threat_severity = SEVERITY["MEDIUM"];
     elif "mass scanner" in result["reason"]:
-        threat_severity = SEVERITY["LOW"];
+        threat_severity = SEVERITY["MEDIUM"];
     else:
         for keyword in INFO_SEVERITY_KEYWORDS:
             if keyword in result["reason"]:
@@ -610,33 +549,8 @@ def fetch_events():
 
 
 def main():
-    parser = optparse.OptionParser(version=VERSION)
-    parser.add_option("-c", dest="config_file", default=CONFIG_FILE, help="configuration file (default: '%s')" % os.path.split(CONFIG_FILE)[-1])
-    parser.add_option("-r", dest="pcap_file", help="pcap file for offline analysis")
-    parser.add_option("-p", dest="plugins", help="plugin(s) to be used per event")
-    parser.add_option("-q", "--quiet", dest="quiet", action="store_true", help="turn off regular output")
-    parser.add_option("--console", dest="console", action="store_true", help="print events to console")
-    parser.add_option("--offline", dest="offline", action="store_true", help="disable (online) trail updates")
-    parser.add_option("--debug", dest="debug", action="store_true", help=optparse.SUPPRESS_HELP)
-    parser.add_option("--profile", dest="profile", help=optparse.SUPPRESS_HELP)
-
-    patch_parser(parser)
-
-    options, _ = parser.parse_args()
-
     print("[*] starting @ %s\n" % time.strftime("%X /%Y-%m-%d/"))
-
-    read_config(options.config_file)
-
-    for option in dir(options):
-        if isinstance(getattr(options, option), (six.string_types, bool)) and not option.startswith('_'):
-            config[option] = getattr(options, option)
-
-    if options.debug:
-        config.console = True
-        config.PROCESS_COUNT = 1
-        config.SHOW_DEBUG = True
-    
+    read_config(CONFIG_FILE)
     try:
         init()
     except KeyboardInterrupt:
